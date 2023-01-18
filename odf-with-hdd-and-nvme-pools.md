@@ -377,6 +377,9 @@ $ oc delete pods -n openshift-storage -l app=rook-ceph-operator
 
 ## Delete everything and try again
 
+I found this Cleanup ODF Knowledge Base article helpful
+https://access.redhat.com/articles/6525111
+
 If you delete the `StorageCluster` resource, it should also delete any resources it created like `CephBlockPools`. Because we created our own `CephBlockPools`, `CephFilesystems`, and `StorageClasses` we have to delete those ourselves before the `StorageCluster` will finish deleting. Of course you can remove `finalizers:` to force an object to delete, but I don't like doing that.
 
 I find that these two commands, **and a lot of patience**, is usually all I need:
@@ -385,58 +388,61 @@ You need patience because the HDDs, when released from ODF, are reformatted by t
 :::
 :::success
 `oc get storagecluster,cephfilesystem,cephblockpool -o name | xargs oc delete --wait=false`
+
 `oc get storageclass | awk '/ceph.com/ {print $1}' | xargs oc delete storageclass`
 :::
 
-
-I found this Cleanup ODF Knowledge Base article helpful
-https://access.redhat.com/articles/6525111
-
-#uninstall-mode
+Here are some commands that I've used
+```
+# query uninstall mode
 oc describe storagecluster/ocs-storagecluster -n openshift-storage | grep uninstall
 
-#snapshots
+# delete snapshots
 oc get volumesnapshot --all-namespaces -o yaml | oc delete -f -
 
-#monitoring
+# remove monitoring configs - remove monitoring PersistantVolumes
 oc delete configmap/cluster-monitoring-config -n openshift-monitoring
 oc get pvc -n openshift-monitoring -o yaml | oc delete -f -
 
-#registry
+# remove registry config - remove registry PV
 oc patch config.imageregistry.operator.openshift.io/cluster --type json --patch  '[{ "op": "remove", "path": "/spec/storage" },{ "op": "replace", "path": "/spec/replicas", "value": 1 }]'
 oc get pvc -n openshift-image-registry -o yaml | oc delete -f -
 
-#logging- https://docs.openshift.com/container-platform/4.11/logging/cluster-logging-uninstall.html
+# remove logging - remove logging PVs
+# https://docs.openshift.com/container-platform/4.11/logging/cluster-logging-uninstall.html
 oc delete  ClusterLogging/instance -n openshift-logging
 oc get pvc -n openshift-logging -o yaml | oc delete -f -
 
-#remove-is-default-annotation
-#remove-storageClass
+# remove-is-default-annotation
+TODO - oc get storageclass
+
+# remove ODF storageClasses
 oc get storageclass | awk '/ocs-storagecluster-ceph*/ {print "oc delete storageclass/" $1}' | /bin/sh
 
 
-#remove-pvcs
+# remove all PersistantVolumeClaims (DANGER!)
 oc get pvc -A | awk '/ocs-storagecluster-ceph*/ {print "oc delete -n " $1 " pvc/" $2}' | /bin/sh
 
-#remove-obcs
+# remove ObjectBucketClaims
+TODO - oc get obc -A
 
-#remove-VirtualMachines
+# remove VirtualMachines (DANGER!)
 oc get vm -A -o yaml | oc delete -f -
 
-#remove-datavolumes?
+# remove DataVolumes - created & used by OpenShift Virtualization
 oc get datavolume -A -o yaml | oc delete -f -
 
-#remove-custome-CephBlockPools
+# remove custom CephBlockPools
 oc delete -n openshift-storage cephblockpool --all
 
-#remove-released-PersistentVolumes
+# remove "released" PersistentVolumes
 oc get pv | awk '/ocs-storagecluster-ceph*/ {print "oc delete pv/" $1}' | /bin/sh
-
+```
 
 ## Clean the disks (wipe, zap, shred, etc...)
 
 :::warning
-The Local Storage Operator will cleanup any `PersistentVolumes` (HDDs, SSDs, NVMEs...) that are `Released` when their `PersistentVolumeClaim` is deleted. This happens when you delete the `StorageCluster`. The `Reclaim` process executes a `quick_reset.sh` script that takes A LONG TIME to complete when working with real HDDs. My 8TB HDDs can take up to 20 minutes to execute the script! The script first creates an ext2 filesystem as a way to to TRIM/DISCARD data and then uses wipefs to remove the ext2 filesystem. If you see errors about "detected ext2" when recreating your OSD pods, it usually means you didn't let the `quick_reset.sh` script finish.
+The Local Storage Operator will cleanup any `PersistentVolumes` (HDDs, SSDs, NVMEs...) that are `Released` when their `PersistentVolumeClaim` is deleted. This happens when you delete the `StorageCluster`. The `Reclaim` process executes a `quick_reset.sh` script that takes A LONG TIME to complete when working with real HDDs. My 8TB HDDs can take up to **20 minutes** to execute the script! The script first creates an ext2 filesystem as a way to to TRIM/DISCARD data and then uses wipefs to remove the ext2 filesystem. If you see errors about "detected ext2" when recreating your OSD pods, it usually means you didn't let the `quick_reset.sh` script finish.
 :::
 
 The Ceph OSD Bluestore signature is difficult to detect, so we just use `sgdisk` to "zap"/erase the partition table regions
