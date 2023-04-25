@@ -9,6 +9,25 @@ A minimal download of OpenShift Platform Plus requires ~50GB of space
 If you're using mounted storage, consider setting `--quayRoot` to a subdirectory of the mountpoint. Uninstalling the mirror registry will fail otherwise.
 :::
 
+Lots of good information in this blog - [Mirroring OpenShift Registries: The Easy Way by Ben Schmaus and Daniel Messer (August 23, 2022)](https://cloud.redhat.com/blog/mirroring-openshift-registries-the-easy-way).
+
+## Local DNS with `dnsmasq` (optional)
+
+```
+interface=eth1
+bind-interfaces
+# server=10.0.0.1  # Use an upstream DNS server after ours
+
+dhcp-range=192.168.0.180,192.168.0.199
+dhcp-option=option:router,192.168.0.10
+dhcp-option=option:ntp-server,192.168.0.10
+
+auth-zone=airgap.local
+host-record=api.cluster.airgap.local,192.168.0.100
+host-record=api-int.cluster.airgap.local,192.168.0.100
+host-record=ingress.cluster.airgap.local,192.168.0.101
+cname=*.apps.cluster.airgap.local,ingress.cluster.airgap.local
+```
 
 ## Install `mirror-registry` (aka mini Quay)
 
@@ -50,6 +69,58 @@ These services will automatically start when the system is rebooted. The `quay-r
 
 ```
 systemctl restart quay-pod
+```
+
+### Alternative to `mirror-registry`: Use docker registry
+
+First thing we need to do is create some directories for our container registry we will be setting up and changing the owner to our current user
+```
+sudo mkdir -p /opt/registry/{auth,certs,data}
+sudo chown -R $USER /opt/registry
+```
+
+Next we will create a certificate for our registry to use
+```
+cd /opt/registry/certs
+openssl req -newkey rsa:4096 -nodes -sha256 -keyout domain.key -x509 -days 365 -addext "subjectAltName = DNS:registry.airgap.local" -out domain.crt
+
+Country Name (2 letter code) [XX]:US
+State or Province Name (full name) []: North Carolina
+Locality Name (eg, city) [Default City]:Raleigh
+Organization Name (eg, company) [Default Company Ltd]:Red Hat
+Organizational Unit Name (eg, section) []:
+Common Name (eg, your name or your server's hostname) []:registry.airgap.local
+Email Address []:<your-email-address>test@example.com
+```
+
+The common name is the one that matters the rest of these can be pretty much any value but the common name must be the correct name for your machine in order for the certificate to properly resolve
+
+Next we will add simple password authentication on our registry we will just use the username openshift and the password redhat for demonstration purposes
+```
+htpasswd -bBc /opt/registry/auth/htpasswd openshift redhat
+```
+
+Now we can setup our resgistry to run, use the password and certificate we created and automaticatlly start in case the vm ever restarts
+```
+podman run -d --name mirror-registry \
+-p 5000:5000 --restart=always \
+-v /opt/registry/data:/var/lib/registry:z \
+-v /opt/registry/auth:/auth:z \
+-e "REGISTRY_AUTH=htpasswd" \
+-e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+-e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+-v /opt/registry/certs:/certs:z \
+-e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt \
+-e REGISTRY_HTTP_TLS_KEY=/certs/domain.key \
+docker.io/library/registry:2
+```
+
+Update system trust store
+```
+sudo cp /opt/registry/certs/domain.crt /etc/pki/ca-trust/source/anchors/
+sudo update-ca-trust
+
+curl -u openshift:redhat https://registry.airgap.local:5000/v2/_catalog
 ```
 
 ## Install the `oc-mirror` plugin
@@ -107,7 +178,8 @@ $ vi imageset-config.yaml
 ```
 
 EXAMPLE IMAGESETCONFIG
-https://gist.github.com/johnsimcall/e27549db5da5cd26206fd0e4fd6b1a61
+https://gist.github.com/johnsimcall/27a7bb96a76ee8021c13bc4e2c4ad9fa - NVIDIA
+https://gist.github.com/johnsimcall/e27549db5da5cd26206fd0e4fd6b1a61 - OCP-Virt and ODF
 
 ## Add `imageContentSources:` to install-config.yaml
 
@@ -137,10 +209,52 @@ imageContentSources:
 
 I'll describe using the new agent-based installer here
 
+### Sample agent-config.yaml
+
+```yaml
+apiVersion: v1alpha1
+kind: AgentConfig
+metadata:
+  name: cluster
+rendezvousIP: 172.31.255.252
+hosts:
+  - hostname: master-0
+    interfaces:
+      - name: eno1
+        macAddress: 00:50:56:82:8c:dc
+    rootDeviceHints:
+      deviceName: /dev/sda
+  - hostname: master-1
+    interfaces:
+      - name: eno1
+        macAddress: 00:50:56:82:8c:dd
+    rootDeviceHints:
+      deviceName: /dev/sda
+  - hostname: master-2
+    interfaces:
+      - name: eno1
+        macAddress: 00:50:56:82:8c:de
+      - name: eno2
+        macAddress: 00:50:56:82:8c:df
+    networkConfig:
+      interfaces:
+        - name: eno2
+          type: ethernet
+          state: down
+          mac-address: 00:50:56:82:8c:df
+          ipv4:
+            enabled: false
+```
+
+### Make the agent-based ISO image and boot
+
 ```
 mkdir ocp-airgap/
 cp install-config.yaml.backup ocp-airgap/install-config.yaml
-cp agent-config.yaml.backup ocp-airgap/agent-config.yaml
+
+openshift-install agent create agent-config-template
+# cp agent-config.yaml.backup ocp-airgap/agent-config.yaml
+
 openshift-install --dir=ocp-airgap agent create image
 
 cd ocp-airgap/
@@ -151,14 +265,14 @@ openshift-install --dir=ocp-airgap agent wait-for bootstrap-complete --log-level
 openshift-install --dir=ocp-airgap agent wait-for install-complete --log-level=debug
 ```
 
-### Disable the default OperatorHub Catalog Sources
+## Disable the default OperatorHub Catalog Sources
 
 ```
 oc patch OperatorHub cluster --type merge \
   --patch '{"spec":{"disableAllDefaultSources":true}}'
 ```
 
-### Create a new disconnected Operator Catalog
+## Create a new disconnected Operator Catalog
 
 ```
 oc get catalogsource --all-namespaces
@@ -183,7 +297,7 @@ oc logs -n openshift-marketplace redhat-operator-index-sj6q7
 time="2023-02-16T17:10:14Z" level=info msg="serving registry" configs=/configs port=50051
 ```
 
-### Run the mirror process (to a filesystem)
+## Run the mirror process (to a filesystem)
 
 I had trouble mirroring the kubevirt-operator because of a missing `virtio-win` container image. I also had to specify both the "stable" and "stable-1.1" channels of `redhat-oadp-operator` because the dependecy resolution wouldn't proceed with only "stable".
 
@@ -258,7 +372,7 @@ $ time oc mirror file:///data/oc-mirror-imageset-openshift-platform-plus/ \
       | tee -a imageset-config.yaml.all-operators.filepath.logs
 ```
 
-### Run the mirror process (into a Container Registry)
+## Run the mirror process (into a Container Registry)
 
 ```
 $ time oc mirror docker://$(hostname -f):8443 \
