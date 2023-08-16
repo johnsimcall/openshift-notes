@@ -82,7 +82,9 @@ sudo chown -R $USER /opt/registry
 Next we will create a certificate for our registry to use
 ```
 cd /opt/registry/certs
-openssl req -newkey rsa:4096 -nodes -sha256 -keyout domain.key -x509 -days 365 -addext "subjectAltName = DNS:registry.airgap.local" -out domain.crt
+openssl req -newkey rsa:4096 -nodes -sha256 -x509 -days 365  \
+  -keyout domain.key -out domain.crt \
+  -addext "subjectAltName = DNS:registry.airgap.local" 
 
 Country Name (2 letter code) [XX]:US
 State or Province Name (full name) []: North Carolina
@@ -144,7 +146,7 @@ Download your "pull secret" from the Red Hat OpenShift Cluster Manager at https:
 jq . pull-secret.txt
 mkdir -p $HOME/.docker
 mv -v pull-secret.txt $HOME/.docker/config.json
-podman login -u admin -p redhat123 --authfile $HOME/.docker/config.json $(hostname -f):8443
+podman login -u openshift -p redhat --authfile $HOME/.docker/config.json $(hostname -f):8443
 
 # OPTIONAL - remove the Insights & Telemetry connection
 # https://docs.openshift.com/container-platform/4.12/support/remote_health_monitoring/opting-out-of-remote-health-reporting.html
@@ -403,8 +405,7 @@ for i in $(jq --raw-output '. | select( .schema | contains("olm.package")) | .na
 jq .name configs/*/catalog.json
 
 # list available operators
-# oc mirror list operators --version 4.12 --catalog registry.redhat.io/redhat/redhat-operat
-or-index:v4.12
+# oc mirror list operators --version 4.12 --catalog registry.redhat.io/redhat/redhat-operator-index:v4.12
 # the `oc mirror` command takes 60 seconds to run
 ls configs/
 
