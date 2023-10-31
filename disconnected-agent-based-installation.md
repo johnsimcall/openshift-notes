@@ -13,7 +13,8 @@ Lots of good information in this blog - [Mirroring OpenShift Registries: The Eas
 
 ## Local DNS with `dnsmasq` (optional)
 
-```
+`/etc/dnsmasq.d/disconnected.conf`:
+```=
 interface=eth1
 bind-interfaces
 # server=10.0.0.1  # Use an upstream DNS server after ours
@@ -189,7 +190,7 @@ oc-mirror, from what I can tell, assumes that you already have a cluster install
 
 You can copy-paste from the YAML files. You may have multiple YAML sections, one for `release-0`, another for `operator-0`, and one for `generic-0`. Installation *requires* the `release-0` section, which when added to my `install-config.yaml` looks like this...
 
-```
+```=
 apiVersion: v1
 baseDomain: example.redhat.com
 ...
@@ -213,7 +214,7 @@ I'll describe using the new agent-based installer here
 
 ### Sample agent-config.yaml
 
-```yaml
+```yaml=
 apiVersion: v1alpha1
 kind: AgentConfig
 metadata:
@@ -267,14 +268,16 @@ openshift-install --dir=ocp-airgap agent wait-for bootstrap-complete --log-level
 openshift-install --dir=ocp-airgap agent wait-for install-complete --log-level=debug
 ```
 
-## Disable the default OperatorHub Catalog Sources
+## Day 2 Operations
+
+### Disable the default OperatorHub Catalog Sources
 
 ```
 oc patch OperatorHub cluster --type merge \
   --patch '{"spec":{"disableAllDefaultSources":true}}'
 ```
 
-## Create a new disconnected Operator Catalog
+### Create a new disconnected Operator Catalog
 
 ```
 oc get catalogsource --all-namespaces
@@ -299,11 +302,20 @@ oc logs -n openshift-marketplace redhat-operator-index-sj6q7
 time="2023-02-16T17:10:14Z" level=info msg="serving registry" configs=/configs port=50051
 ```
 
-## Run the mirror process (to a filesystem)
+### Disable Automatic Boot Sources for OpenShift Virtualization (if installed)
+
+```bash
+$ oc patch hco kubevirt-hyperconverged -n openshift-cnv --type json \
+  -p '[{"op": "replace", 
+      "path": "/spec/featureGates/enableCommonBootImageImport",
+      "value": false}]'
+```
+
+### Update Content: Run the mirror process (to a filesystem)
 
 I had trouble mirroring the kubevirt-operator because of a missing `virtio-win` container image. I also had to specify both the "stable" and "stable-1.1" channels of `redhat-oadp-operator` because the dependecy resolution wouldn't proceed with only "stable".
 
-```
+```=
 ---
 kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v1alpha2
