@@ -3,8 +3,8 @@
 ## Goal
 
 Use OpenShift Data Foundations (Ceph) to present two highly-available StorageClasses
-  * one StorageClass for high-speed SSD-based PersistentVolumes
-  * and another StorageClass for slower HDD-based PersistentVolumes
+  * one `StorageClass` for high-speed SSD-based `PersistentVolumes`
+  * and another `StorageClass` for slow HDD-based `PersistentVolumes`
 
 **Please note:** I want two distinct StorageClasses instead of trying to create one StorageClass that does [automatic tiering/caching](https://docs.ceph.com/en/latest/rados/operations/cache-tiering/).
 
@@ -142,9 +142,12 @@ spec:
       cluster: openshift-storage/ocs-cluster
   storageDeviceSets:
   - name: nvme
+    config:
+      tuneFastDeviceClass: true  #This helps when rota=[0|1] can't be trusted
     count: 6 
     replica: 1 
     deviceType: nvme
+    deviceClass: nvme
     dataPVCTemplate:
       spec:
         storageClassName: local-nvme 
@@ -153,11 +156,21 @@ spec:
         volumeMode: Block
         resources:
           requests:
-            storage: 1 
+            storage: 1
+    resources:
+      limits:
+        cpu: "2"     # <--- default is 2
+        memory: 8Gi  # <--- default is 8Gi
+      requests:
+        cpu: "2"     # <--- default is 2
+        memory: 8Gi  # <--- default is 8Gi
   - name: hdd
+    config:
+      tuneSlowDeviceClass: true  #This helps when rota=[0|1] can't be trusted
     count: 30
     replica: 1
     deviceType: hdd
+    deviceClass: hdd
     dataPVCTemplate:
       spec:
         storageClassName: local-hdd
@@ -167,6 +180,13 @@ spec:
         resources:
           requests:
             storage: 1
+    resources:
+      limits:
+        cpu: "2"     # <--- default is 2
+        memory: 8Gi  # <--- default is 8Gi
+      requests:
+        cpu: "2"     # <--- default is 2
+        memory: 8Gi  # <--- default is 8Gi
   managedResources:
     cephBlockPools:
       reconcileStrategy: ignore  ###don't create the default CephBlockPool nor the RBD StorageClass
@@ -385,11 +405,13 @@ If you delete the `StorageCluster` resource, it should also delete any resources
 I find that these two commands, **and a lot of patience**, is usually all I need:
 :::danger
 You need patience because the HDDs, when released from ODF, are reformatted by the Local Storage Operator with an ext2 filesystem (because running mkfs.ext2 is an easy way to issue DISCARD/TRIM commands. TRIM/DISCARD works great for SSD devices and probably EBS or VMware volumes that can pass along the savings to backend storage. But formatting an 8TB HDD at ionice priority level "idle" takes **a long time -- like 20 minutes**! After `mkfs.ext2` finishes `wipefs` is called, the `PersistentVolumes` are marked as `Available` and then the drives are ready to be reused.
-:::
-:::success
-`oc get storagecluster,cephfilesystem,cephblockpool -o name | xargs oc delete --wait=false`
 
-`oc get storageclass | awk '/ceph.com/ {print $1}' | xargs oc delete storageclass`
+```
+oc get -n openshift-storage storagecluster,cephfilesystem,cephblockpool -o name | xargs oc delete -n openshift-storage --wait=false
+
+oc get storageclass | awk '/ceph.com/ {print $1}' | xargs oc delete storageclass
+```
+
 :::
 
 Here are some commands that I've used
@@ -447,6 +469,10 @@ The Local Storage Operator will cleanup any `PersistentVolumes` (HDDs, SSDs, NVM
 
 The Ceph OSD Bluestore signature is difficult to detect, so we just use `sgdisk` to "zap"/erase the partition table regions
 https://rook.github.io/docs/rook/v1.3/ceph-teardown.html#zapping-devices
+
+```
+dd if=/dev/zero of="$DISK" bs=1M count=100 oflag=direct,dsync
+```
 
 The example above, as well as a GUI deployment, will store Ceph Monitor (MON) data in a `HostPath` on the OpenShift Node instead of in a `PersistentVolume`. We need to check each node and make sure the `/var/lib/rook` directory gets deleted before trying to reinstall.
 
