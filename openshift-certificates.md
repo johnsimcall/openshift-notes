@@ -1,5 +1,9 @@
 # OpenShift Certificates
 
+:::success
+Click [here](#Cheat-sheet) to jump straight to the commands
+:::
+
 OpenShift is secure by default. The installation process creates two self-signed certificates that are used to: 1) encrypt and secure the connection between users and the applications running on OpenShift 2) encrypt and secure the API endpoint used for command-line interactions (e.g. `oc apply -f myapp.yaml` and `kubectl apply -f myapp.yaml`).
 
 Applications hosted on OpenShift, including the Web Console, can use the Router / Ingress Controller's wildcard certificate for security and encryption. The wildcard certificate allows your applications to be hosted under the `*.apps.example.com` domain. But users will most likely be uncomfortable clicking through the browser prompts asking them to trust the default self-signed certificate.
@@ -8,11 +12,11 @@ The self-signed [API](https://docs.openshift.com/container-platform/latest/secur
 
 ## Certificate overview, drivers licenses and beers :beers:
 
-Certificates, also known as X.509 certificates, are similar to a driver's license. A driver's license has your name and photo on it as well as markings from the state that issued it. When you show your license to somebody, to buy a beer for example, they compare what you look like to the photo on the license to make sure you're not impersonating somebody else. They also look at the state's markings and decide if your license was signed by somebody they trust. If the photo doesn't match, or the person you showed your license to doesn't trust the issued it, they won't give you a beer. :cry:
+Certificates, also known as X.509 certificates, are similar to a driver's license. A driver's license has your name and photo on it as well as markings from the state that issued it. When you show your license to somebody, to buy a beer for example, they compare what you look like to the photo on the license to make sure you're not impersonating somebody else. They also look at the state's markings and decide if your license was signed by somebody they trust. If the photo doesn't match, or the person you showed your license to doesn't trust the state that issued it, they won't give you a beer. :cry:
 
-Similarly, your certificate needs to include the name(s) of your website and be signed by a Certificate Authority (CA) that your users' trust. Problems arise when a website named foo.example.com shows a certificate that says it was created for bar.example.com, because the names don't match. Other problems arise if the names match but the certificate was created/signed by an untrusted CA. Its common to say that certificates were "signed" by a CA rather than "created" or "issued" by the CA. Certificates either need to be signed by a CA that your users already trust, or your users need to add the signing CA to their list of trusted CAs.
+Similarly, your OpenShift certificates need to include the name(s) of your website(s) and be signed by a Certificate Authority (CA) that your users' trust. Problems arise when a website named foo.example.com shows a certificate that says it was created for bar.example.com, because the names don't match. Other problems arise if the names match but the certificate was created/signed by an untrusted CA. Its common to say that certificates were "signed" by a CA rather than "created" or "issued" by the CA. Certificates either need to be signed by a CA that your users already trust, or your users need to add the signing CA to their list of trusted CAs.
 
-Creating a certificate requires a few details like the name(s) of the website the certificate will be used for, your company name and location, and the public part of a public/private encryption key pair. The combination of certificate details and public encryption key are called a certificate signing request (CSR). Your CSR needs to be sent to a CA where it will be reviewed. If the CA is convinced that your details are legitimate (e.g. you're not requesting a certificate for a website you don't own) they will sign your certificate request and return a certificate with their name on it stating that the certificate is valid for the websites your requested.
+Creating a certificate requires a few details like the name(s) of the website the certificate will be used for, your company name and location, and the public part of a public+private encryption key pair. The combination of certificate details and a public encryption key are called a certificate signing request (CSR). Your CSR needs to be sent to a CA where it will be reviewed. If the CA is convinced that your details are legitimate (e.g. you're not requesting a certificate for a website you don't own) they will sign your certificate request and return a certificate with their name on it stating that the certificate is valid for the websites your requested.
 
 The links below are from Certificate Authorities that will sell you a certificate.
 https://www.ssl.com/faqs/what-is-an-x-509-certificate/
@@ -116,7 +120,7 @@ While not strictly required, it is recommended to provide the entire chain of tr
 
 ```bash
 # Combine the Intermediate and Root CAs with the *.apps.example.com certificate
-cat example.com.crt intermediate.pem root.pem > example.com.crt.fullchain
+cat example.com.crt intermediateCA.pem rootCA.pem > example.com.crt.fullchain
 
 # Upload the certificate+chain and private key into a Secret
 oc create secret tls ingress-certificate \
@@ -137,7 +141,7 @@ Configuring the API server to use the new api.example.com certificate is done by
 
 ```bash
 # Combine the Intermediate and Root CAs with the api.example.com certificate
-cat example.com.crt intermediate.pem root.pem > example.com.crt.fullchain
+cat example.com.crt intermediateCA.pem rootCA.pem > example.com.crt.fullchain
 
 # Upload the certificate+chain and private key into a Secret
 oc create secret tls api-certificate \
@@ -149,7 +153,7 @@ export CLUSTER_NAME=example.com
 
 # Finally, patch the FQDN (api.example.com) and Secret name into the YAML
 oc patch apiserver/cluster --type=merge \
-  -p '{"spec":{"servingCerts": {"namedCertificates": [{"names": ["api.${CLUSTER_NAME}"], "servingCertificate": {"name": "api-certificate"}}]}}}'
+  -p '{"spec":{"servingCerts": {"namedCertificates": [{"names": ["api.'${CLUSTER_NAME}'"], "servingCertificate": {"name": "api-certificate"}}]}}}'
 
 # Wait for new API server pods will rollout in a few seconds
 oc get events -w -n openshift-kube-apiserver
@@ -204,4 +208,51 @@ sudo update-ca-trust extract
 # Then copy them into the expected location and run the update command
 sudo cp foo.crt /usr/local/share/ca-certificates/foo.crt
 sudo update-ca-certificates
+```
+
+## Cheat sheet
+
+```bash=
+### Create the CSR
+# Set a variable with the cluster name (without the api. or *.apps prefix)
+export CLUSTER_NAME=example.com
+
+# Create the key pair and request in one command
+openssl req -newkey rsa:4096 -nodes \
+  -subj "/CN=${CLUSTER_NAME}" \
+  -addext "subjectAltName=DNS:api.${CLUSTER_NAME}, DNS:*.apps.${CLUSTER_NAME}" \
+  -keyout ${CLUSTER_NAME}.key \
+  -out ${CLUSTER_NAME}.csr
+
+
+### Send the CSR off for signing and get coffee while we wait
+
+
+### Add the issuing CA to OpenShift's lists of trust CAs
+# Create a ConfigMap from a file (Certificate Authority data should be in PEM format)
+oc create configmap custom-ca --from-file=ca-bundle.crt=rootCA.pem -n openshift-config
+
+# Tell OpenShift to trust the additional CAs listed in the ConfigMap
+oc patch proxy/cluster --type=merge -p '{"spec":{"trustedCA":{"name":"custom-ca"}}}'
+
+
+
+### Update the Router's *.apps certificate
+# Combine the Intermediate and Root CAs with the *.apps.example.com certificate
+cat example.com.crt intermediateCA.pem rootCA.pem > example.com.crt.fullchain
+
+# Upload the certificate+chain and private key into a Secret
+oc create secret tls ingress-certificate --cert=example.com.crt.fullchain --key=./example.com.key -n openshift-ingress
+
+# Tell the OpenShift Router / Ingress Controller to use the new certificate
+oc patch ingresscontroller.operator/default --type=merge -p '{"spec":{"defaultCertificate": {"name": "ingress-certificate"}}}' -n openshift-ingress-operator
+
+
+
+### Update the API certificate
+# Upload the certificate+chain and private key into a Secret
+oc create secret tls api-certificate --cert=example.com.crt.fullchain --key=./example.com.key -n openshift-config
+
+# Patch the FQDN (api.example.com) and Secret name into the YAML
+oc patch apiserver/cluster --type=merge -p '{"spec":{"servingCerts": {"namedCertificates": [{"names": ["api.'${CLUSTER_NAME}'"], "servingCertificate": {"name": "api-certificate"}}]}}}'
 ```
